@@ -1,0 +1,181 @@
+MODULE main
+
+-- Definiamo i possibili stati del drone
+VAR
+  state : {normale, no_rete, atterraggio, ritorno_base, schianto, manutenzione, tentativo_ricollegamento, errore_ripristino, manutenzione_programmata, emergenza};
+
+-- Variabili per condizioni ambientali
+VAR
+  condizioni_meteorologiche : {buone, vento_forte, pioggia}; -- Condizioni meteorologiche che influenzano il comportamento del drone
+
+-- Variabile per la batteria
+VAR
+  batteria : 0..100;  -- Percentuale di batteria da 0 a 100
+
+-- Definiamo la transizione tra gli stati
+ASSIGN
+  init(state) := normale;  -- Lo stato iniziale del drone è "normale"
+  init(batteria) := 100;  -- All'inizio la batteria è al 100%
+
+  next(state) := 
+    case
+      -- Condizioni per rimanere nello stato normale
+      state = normale & !rete_persa & condizioni_meteorologiche = buone & batteria > 20 : normale; 
+      
+      -- Il drone entra nello stato "no_rete" se perde la connessione
+      state = normale & rete_persa : no_rete; 
+      
+      -- Se è in "no_rete" e le condizioni sono buone, atterra
+      state = no_rete & condizioni_meteorologiche = buone & scelta = 0 : atterraggio; 
+      
+      -- In caso di condizioni avverse, entra in emergenza
+      state = no_rete & condizioni_meteorologiche = vento_forte : emergenza; 
+      state = no_rete & condizioni_meteorologiche = pioggia : emergenza; 
+      
+      -- Se si sceglie di tornare alla base
+      state = no_rete & scelta = 1 : ritorno_base; 
+      
+      -- Tentativo di ripristinare la connessione
+      state = no_rete & scelta = 2 : tentativo_ricollegamento; 
+      
+      -- Timeout durante il tentativo di ripristino porta a errore di ripristino
+      state = tentativo_ricollegamento & timeout : errore_ripristino; 
+      
+      -- Se il ripristino ha successo, torna a stato normale
+      state = tentativo_ricollegamento & !timeout : normale; 
+      
+      -- Rimanere nello stato di atterraggio
+      state = atterraggio : atterraggio; 
+      
+      -- Se il ritorno alla base fallisce, va in "schianto"
+      state = ritorno_base & !fallito : ritorno_base; 
+      state = ritorno_base & fallito : schianto; 
+      
+      -- Se necessita di manutenzione, entra nello stato di manutenzione
+      state = normale & necessita_manutenzione : manutenzione; 
+      
+      -- Dopo la manutenzione, torna a normale
+      state = manutenzione : normale; 
+      
+      -- Dopo la manutenzione programmata, torna a normale
+      state = manutenzione_programmata : normale; 
+      
+      -- In caso di emergenza, atterra
+      state = emergenza : atterraggio; 
+      
+      -- In caso di nessuna corrispondenza, rimane nello stato attuale
+      TRUE : state; 
+    esac;
+
+-- Definiamo le variabili ausiliarie
+VAR
+  rete_persa : boolean;  -- Indica se la connessione è stata persa
+  necessita_manutenzione : boolean;  -- Indica se il drone necessita di manutenzione
+  scelta : 0..2;  -- Scelta dell'azione da intraprendere (atterrare, tornare alla base, tentare di riconnettersi)
+  fallito : boolean;  -- Indica se il tentativo di ritorno alla base è fallito
+  timeout : boolean;  -- Indica se è scaduto il tempo per il tentativo di riconnessione
+  ritardo_ripristino : boolean;  -- Indica se c'è un ritardo nel ripristino della rete
+  tentativi_ripristino : 0..2;  -- Limitiamo i tentativi di ripristino a 0, 1 o 2
+
+-- Transizione delle variabili ausiliarie
+ASSIGN
+  init(rete_persa) := FALSE;  -- Inizialmente, la rete non è persa
+  next(rete_persa) := case
+    state = normale : FALSE;  -- In stato normale, la rete non è persa
+    state = no_rete : TRUE;  -- In stato di "no_rete", la rete è persa
+    TRUE : rete_persa;  -- Rimanere nello stato corrente altrimenti
+  esac;
+
+  init(fallito) := FALSE;  -- Inizialmente, il tentativo di ritorno alla base non è fallito
+  next(fallito) := case
+    state = ritorno_base : fallito;  -- In stato di ritorno alla base, può essere segnato come fallito
+    TRUE : fallito;  -- Rimanere nello stato corrente altrimenti
+  esac;
+
+  init(necessita_manutenzione) := FALSE;  -- Inizialmente, non è necessaria manutenzione
+  next(necessita_manutenzione) := case
+    state = normale : TRUE;  -- In stato normale, si richiede manutenzione
+    state = manutenzione : FALSE;  -- In stato di manutenzione, non è necessaria manutenzione
+    TRUE : necessita_manutenzione;  -- Rimanere nello stato corrente altrimenti
+  esac;
+
+  init(timeout) := FALSE;  -- Inizialmente, non c'è timeout
+  next(timeout) := case
+    state = tentativo_ricollegamento : TRUE;  -- In tentativo di riconnessione, il timeout è attivo
+    state != tentativo_ricollegamento : FALSE;  -- Altrimenti, disabilita il timeout
+    TRUE : timeout;  -- Rimanere nello stato corrente altrimenti
+  esac;
+
+  init(ritardo_ripristino) := FALSE;  -- Inizialmente, non c'è ritardo nel ripristino
+  next(ritardo_ripristino) := case
+    state = no_rete : TRUE;  -- In stato di "no_rete", c'è un ritardo nel ripristino
+    state != no_rete : FALSE;  -- Altrimenti, disabilita il ritardo
+    TRUE : ritardo_ripristino;  -- Rimanere nello stato corrente altrimenti
+  esac;
+
+  init(tentativi_ripristino) := 0;  -- Inizialmente, non ci sono tentativi di ripristino
+  next(tentativi_ripristino) := case
+    state = tentativo_ricollegamento & tentativi_ripristino < 2 : tentativi_ripristino + 1;  -- Incrementa il conteggio dei tentativi
+    state != tentativo_ricollegamento : 0;  -- Reset dei tentativi se non si è più in tentativo di riconnessione
+    TRUE : tentativi_ripristino;  -- Rimanere nello stato corrente altrimenti
+  esac;
+
+-- Transizione per la batteria
+ASSIGN
+  next(batteria) := case
+    state != atterraggio : max(0, batteria - 10);  -- Consumo di batteria se non si sta atterrando
+    TRUE : batteria;  -- Rimanere nello stato corrente altrimenti
+  esac;
+
+-- Proprietà LTL e CTL
+
+-- CTL: Il drone non deve mai schiantarsi (proprietà di sicurezza)
+SPEC AG (
+    state != schianto  -- Il drone non deve mai essere nello stato di schianto
+)
+
+-- CTL: Se perde la rete, deve atterrare o tornare alla base
+SPEC AG (
+    state = no_rete -> AF (state = atterraggio | state = ritorno_base)
+)
+
+-- CTL: Se il drone è nello stato di ritorno_base, deve eventualmente arrivare a uno stato di normale o atterraggio
+SPEC AG (
+    state = ritorno_base -> EF (state = normale | state = atterraggio)
+)
+
+-- LTL: Non ci deve essere una sequenza di eventi che porta a schianto
+LTLSPEC G ((state = ritorno_base | state = no_rete) -> F (state != schianto))
+
+-- LTL: Se la rete viene persa, prima o poi il drone deve scegliere di atterrare o tornare alla base
+LTLSPEC F (rete_persa -> (state = atterraggio | state = ritorno_base))
+
+-- LTL: Una volta iniziato il ritorno alla base, prima o poi dovrà arrivare in uno stato stabile (non schianto)
+LTLSPEC G (state = ritorno_base -> F (state = ritorno_base | state = atterraggio))
+
+-- CTL: Se si tenta di tornare alla base, c'è sempre una possibilità di riuscire (non tutti i percorsi devono portare a un fallimento)
+SPEC AG (state = ritorno_base -> EF (state = atterraggio))
+
+-- CTL: Se il drone perde la rete, deve sempre tentare di atterrare o tornare alla base
+SPEC AG (rete_persa -> AF (state = atterraggio | state = ritorno_base))
+
+-- LTL: Se il drone ha deciso di atterrare, non può mai passare di nuovo allo stato di ritorno alla base
+LTLSPEC G (state = atterraggio -> X (state != ritorno_base))
+
+-- LTL: Se il drone è in stato di "atterraggio", deve eventualmente raggiungere uno stato stabile (non schianto)
+LTLSPEC G (state = atterraggio -> F (state = schianto | state = normale))
+
+-- CTL: Se il drone è in "no_rete", deve eventualmente tornare in uno stato "normale"
+SPEC AG (state = no_rete -> AF (state = normale | state = atterraggio | state = ritorno_base))
+
+-- LTL: Se il drone sta tentando di ristabilire la connessione e supera il timeout, deve andare in errore
+LTLSPEC G (state = tentativo_ricollegamento -> (timeout -> X (state = errore_ripristino)))
+
+-- LTL: Se il drone è in "no_rete", deve aspettare un certo tempo prima di tentare di ripristinare la connessione
+LTLSPEC G (state = no_rete -> X (ritardo_ripristino -> F (state = tentativo_ricollegamento)))
+
+-- LTL: Se il drone ha superato 2 tentativi di ripristino, deve andare in stato di errore
+LTLSPEC G (tentativi_ripristino >= 2 -> X (state = errore_ripristino))
+
+-- CTL: Se la batteria scende al di sotto del 20%, il drone deve atterrare o tornare alla base
+SPEC AG (batteria < 20 -> AF (state = atterraggio | state = ritorno_base))
